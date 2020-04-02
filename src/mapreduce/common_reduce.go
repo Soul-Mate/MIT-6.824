@@ -1,5 +1,12 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"io"
+	"log"
+	"os"
+)
+
 // doReduce manages one reduce task: it reads the intermediate
 // key/value pairs (produced by the map phase) for this task, sorts the
 // intermediate key/value pairs by key, calls the user-defined reduce function
@@ -11,6 +18,63 @@ func doReduce(
 	nMap int, // the number of map tasks that were run ("M" in the paper)
 	reduceF func(key string, values []string) string,
 ) {
+
+	// reduce collects immediate files generated during the map phase
+
+	// md is encode immediate file write to memory data
+	md := make(map[string][]string)
+
+	// the mi is map worker location on the cluster (abstraction cluster)
+	for mi := 0; mi < nMap; mi++ {
+		immedidateFile := reduceName(jobName, mi, reduceTaskNumber)
+
+		fr, err := os.Open(immedidateFile)
+		if err != nil {
+			log.Printf("open %s immedidate file failed: %s", immedidateFile, err.Error())
+			continue
+		}
+
+		// encode immediate file and write to memory data
+		dec := json.NewDecoder(fr)
+		for {
+			kv := KeyValue{}
+			if err == dec.Decode(&kv); err != nil {
+				if err == io.EOF {
+					break
+				}
+
+				log.Printf("json encode kv failed: %s", err)
+				continue
+			}
+
+			// write
+			md[kv.Key] = append(memoryData[kv.Key], kv.Value)
+		}
+		fr.Close()
+		dec.Close()
+	}
+
+	// run reduce, write reduce output
+	fw, err := os.Open(outFile)
+	if err != nil {
+		panic(err)
+	}
+
+	enc := json.NewEncoder(fw)
+	for k, vs := range md {
+		err = enc.Encode(KeyValue{k, reduceF(k, vs)})
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+
+			log.Printf("json encode kv failed: %s", err)
+			continue
+		}
+	}
+
+	fw.Close()
+	enc.Close()
 	//
 	// You will need to write this function.
 	//
